@@ -1,0 +1,210 @@
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Arduino.h>
+#include <FlexCAN_T4.h>
+
+namespace carrier { 
+  namespace pin {
+    constexpr uint8_t joyUp{22};
+    constexpr uint8_t joyDown{23};
+    constexpr uint8_t oledDcPower{6};
+    constexpr uint8_t oledCs{10};
+    constexpr uint8_t oledReset{5};
+  }
+
+  namespace oled {
+    constexpr uint8_t screenWidth{128}; 
+    constexpr uint8_t screenHeight{64}; 
+  }
+}
+
+namespace {
+  CAN_message_t msg;
+  CAN_message_t msg2;
+  FlexCAN_T4<CAN0, RX_SIZE_256, TX_SIZE_16> can0;
+  Adafruit_SSD1306 display(carrier::oled::screenWidth,
+                            carrier::oled::screenHeight,
+                            &SPI,
+                            carrier::pin::oledDcPower,
+                            carrier::pin::oledReset,
+                            carrier::pin::oledCs);
+  // Her definerer vi funksjonene.
+  float SpeedofballX = 0.11;
+  float SpeedofballY = 0.1;
+  float Ball_Y = carrier::oled::screenHeight / 2;
+  float Ball_X = carrier::oled::screenWidth / 2;
+  float PaddelX_right = carrier::oled::screenWidth - 5;
+  float Rectangal_Y = carrier::oled::screenHeight / 2;
+  float PaddelSpeedY_right = 0.05;
+  float PaddelY_right = carrier::oled::screenHeight / 2;
+  int Right_Score = 0;
+  int Left_Score = 0;   
+  bool Forste_Press = false;
+  constexpr uint8_t Motstander_Gruppe_Nummer = 2;
+  constexpr uint8_t Gruppe_Nummer = 1; 
+}
+
+void send_CAN();
+void Printe();
+void Joy_stick();
+void Mottat_CAN();
+
+void setup() {
+  Serial.begin(9600);
+  can0.begin();
+  can0.setBaudRate(250000);
+  display.begin(SSD1306_SWITCHCAPVCC);
+  display.clearDisplay();
+  display.display();
+  Serial.print(F("float size in bytes: "));
+  Serial.println(sizeof(float));
+}
+
+void send_CAN() { // sende melding til CAN-buss
+  msg.len = 3;
+  msg.id = 0x11;
+  msg.buf[0] = 0x26;
+  msg.buf[1] = 0x42;
+  msg.buf[2] = 0x00;
+  can0.write(msg);
+}
+
+void Mottat_CAN() { // Motta melding fra CAN-buss
+  can0.read(msg2);
+  msg2.len = 1;
+}
+
+void Ball_Bevegelse() { // Når kode kjøres vil ballen for en Ball_medling ID
+  if (Forste_Press) {
+    CAN_message_t Ball_melding;
+    Ball_melding.id = Gruppe_Nummer + 50;
+    can0.write(Ball_melding);
+    Forste_Press = false;
+  }
+}
+
+void Oppdater_BAll_Posisjon() { // Her gjøre funksjonen at ballen beveger på seg rundt i skjermen
+  Ball_X += SpeedofballX;
+  Ball_Y += SpeedofballY;
+
+ if (Ball_Y < 0 || Ball_Y >= carrier::oled::screenHeight) {
+    SpeedofballY = -SpeedofballY;
+  }
+
+  if (Ball_X <  0 || Ball_X >= carrier::oled::screenWidth) {
+    SpeedofballX = -SpeedofballX;
+  }
+
+  CAN_message_t Melding_BAll;
+  Melding_BAll.id = Gruppe_Nummer + 50;
+  Melding_BAll.len = 2;
+  Melding_BAll.buf[0] = static_cast<uint8_t>(Ball_X);
+  Melding_BAll.buf[1] = static_cast<uint8_t>(Ball_Y);
+  can0.write(Melding_BAll);
+}
+
+
+
+void Paddel_Posisjon() { // Her gir vi paddelen en ID som er Gruppe_nummer + 20
+  CAN_message_t Paddel_Melding;
+  Paddel_Melding.id = Gruppe_Nummer + 20;
+  Paddel_Melding.len = 2;
+  can0.write(Paddel_Melding);
+}
+
+void Joy_stick() {
+  const int dodsone = 360; // Dødsonen til joystick
+  int joystickverdienned = analogRead(carrier::pin::joyDown);
+  int joystickvardienopp = analogRead(carrier::pin::joyUp);
+
+  // Joystick verdien skal være i dodsone omraade
+  if (joystickverdienned < (512 + dodsone) && joystickverdienned > (512 - dodsone)) {
+    joystickverdienned = 512;
+  }
+
+  if (joystickvardienopp < (512 + dodsone) && joystickvardienopp > (512 - dodsone)) {
+    joystickvardienopp = 512;
+  }
+
+  // Dette gjelder i omraade [-1, 1]
+  float Stick_Y = (joystickvardienopp - joystickverdienned) / 1023.0;
+
+  float Multiplier_fart = map(abs(Stick_Y), 0, 1, 0.1, 0.5);
+  Rectangal_Y += Stick_Y * Multiplier_fart;
+
+  Rectangal_Y = constrain(Rectangal_Y, 0, carrier::oled::screenHeight - 20);
+}
+
+void Paddel_hoyre() {
+  PaddelY_right += PaddelSpeedY_right;
+  PaddelY_right = constrain(PaddelY_right, 0, carrier::oled::screenHeight - 20);
+  display.fillRect(static_cast<int>(PaddelX_right), static_cast<int>(PaddelY_right), 3, 20, WHITE);
+}
+
+void Paddel_motta_CAN() { // Her kobler vi hoyre paddel til CAN-buss
+  can0.read(msg2);
+
+  if (msg2.id == 0x12 && msg2.len >= 2) {
+    int16_t Verdi_Joystick = (msg2.buf[0] << 8) | msg2.buf[1];
+    float Normal_Joystick = map(Verdi_Joystick, -32768, 32767, -1.0, 1.0);
+    PaddelSpeedY_right = Normal_Joystick * 0.1; 
+  }
+}
+
+void Data_send_Joystick(float Verdi_Joystick) { 
+  CAN_message_t msg;
+  msg.id = 0x12;
+  msg.len = 2;
+  int16_t Int_Verdijoystick = static_cast<int16_t>(Verdi_Joystick * 32767); 
+  msg.buf[0] = (Int_Verdijoystick >> 8) & 0xFF;
+  msg.buf[1] = Int_Verdijoystick & 0xFF;
+  can0.write(msg);
+}
+
+
+
+
+void Printe() {
+  Joy_stick(); 
+  Ball_Bevegelse();
+  Oppdater_BAll_Posisjon();
+
+  if (Ball_X <= 0) { // Denne dele sier at hvis ballen treffer venstre kanten så får mostander lag +1 poeng
+    int y =2;
+    Right_Score++;
+    Ball_Y = carrier::oled::screenHeight / y;
+    Ball_X = carrier::oled::screenWidth / y;
+  }
+  if (Ball_X >= carrier::oled::screenWidth - 1) { // Denne delen gjelder for andre kanten
+    int y = 2;
+    Left_Score++;
+    Ball_Y = carrier::oled::screenHeight / y;
+    Ball_X = carrier::oled::screenWidth / y;
+  }
+
+  // Dette delen gjør at venstre paddelen treffer ballen
+  if (Ball_X + 2 >= 1 && Ball_X <= 1 + 3 && Ball_Y + 2 >= Rectangal_Y && Ball_Y <= Rectangal_Y + 20) {
+    SpeedofballX = -SpeedofballX; 
+  }
+
+  if (Ball_X + 2 >= PaddelX_right && Ball_X <= PaddelX_right + 3 && Ball_Y + 2 >= PaddelY_right && Ball_Y <= PaddelY_right + 20) {
+    SpeedofballX = -SpeedofballX; 
+  }
+  display.clearDisplay();
+  display.fillCircle(static_cast<int>(Ball_X), static_cast<int>(Ball_Y), 2, 1);
+  display.fillRect(2, static_cast<int>(Rectangal_Y), 3, 20, WHITE);
+  display.drawRect(0, 0, carrier::oled::screenWidth, carrier::oled::screenHeight, WHITE);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(30, 2);
+  display.print(Left_Score);
+  display.setCursor(90, 2);
+  display.print(Right_Score);
+  Paddel_hoyre(); //Her printer vi høyre paddel til OLED-skjerm
+  display.display();
+  send_CAN();
+  Mottat_CAN();
+}
+
+void loop() {Printe();} // Her blir fuksjonen Printe() loopet.
+
